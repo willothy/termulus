@@ -17,14 +17,55 @@ pub enum TerminalOutput<'a> {
     Text(Cow<'a, [u8]>),
 }
 
-pub enum CsiState {
-    Row,
-    Column,
+pub enum CsiState<'a> {
+    Row(&'a [u8]),
+    Column(&'a [u8]),
     Finished,
+    Error,
 }
 
-pub struct CsiParser {
-    state: CsiState,
+pub struct CsiParser<'a> {
+    state: CsiState<'a>,
+    row: usize,
+    col: usize,
+}
+
+impl<'a> CsiParser<'a> {
+    pub fn new() -> Self {
+        Self {
+            state: CsiState::Row(&[]),
+            row: 1,
+            col: 1,
+        }
+    }
+
+    // pub fn push(&mut self, byte: &u8) {
+    //     if *byte == b'H' {
+    //         self.state = CsiState::Finished;
+    //         return;
+    //     }
+    //
+    //     match self.state {
+    //         CsiState::Row(slice) => {
+    //             if *byte == b';' {
+    //                 self.state = CsiState::Column(&[]);
+    //                 return;
+    //             } else if byte.is_ascii_digit() {
+    //                 if slice.len() > 0 {
+    //                     let start = slice as *const [u8] as *const u8;
+    //                     slice = unsafe { std::slice::from_raw_parts(start, slice.len() + 1) };
+    //                 }
+    //                 // self.row = (self.row * 10) + (byte - b'0') as usize;
+    //             } else {
+    //                 self.state = CsiState::Error;
+    //             }
+    //         }
+    //         CsiState::Column => {
+    //             self.col = self.col * 10 + (byte - b'0') as usize;
+    //         }
+    //         CsiState::Finished => unreachable!(),
+    //     }
+    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +96,7 @@ impl<'a> OutputParser<'a> {
         }
     }
 
-    fn partial_push(&mut self, bytes: &[u8], bytes_start: usize, i: usize) {
+    fn partial_push(&mut self, byte: &u8) {
         // Push to partial buffer.
         // Note that there is no actual difference between text and ansi
         // buffer but the use depends on the state of the parser.
@@ -69,25 +110,18 @@ impl<'a> OutputParser<'a> {
                 // This way we can avoid copying the slice unless it's a
                 // partial escape sequence that needs to be preserved for the
                 // next parsing "cycle."
-                let slice_start = (*slice) as *const [u8] as *const u8 as usize;
-                // if slice_start >= bytes_start {
-                if slice.len() > 0 {
-                    let offset = slice_start - bytes_start;
-                    *slice = unsafe {
-                        (&bytes[offset..offset + slice.len() + 1] as *const [u8])
-                            .as_ref()
-                            .expect("slice should be valid because it is a slice of the input")
-                    };
-                } else {
-                    *slice = unsafe {
-                        (&bytes[i..i + 1] as *const [u8])
-                            .as_ref()
-                            .expect("slice should be valid because it is a slice of the input")
-                    };
+                let len = slice.len();
+                unsafe {
+                    if len > 0 {
+                        let start = *slice as *const [u8] as *const u8;
+                        *slice = std::slice::from_raw_parts(start, len + 1);
+                    } else {
+                        *slice = std::slice::from_raw_parts(byte as *const u8, 1);
+                    }
                 }
             }
             Cow::Owned(vec) => {
-                vec.push(bytes[i]);
+                vec.push(*byte);
             }
         }
     }
@@ -119,7 +153,6 @@ impl<'a> OutputParser<'a> {
     }
 
     pub fn parse(&mut self, bytes: &[u8]) -> Vec<TerminalOutput> {
-        let bytes_start = bytes as *const [u8] as *const u8 as usize;
         if self.partial.len() == 0 {
             self.partial = Cow::Borrowed(
                 unsafe { (&bytes[0..0] as *const [u8]).as_ref() }
@@ -127,7 +160,7 @@ impl<'a> OutputParser<'a> {
             );
         }
         let mut output: Vec<TerminalOutput> = Vec::new();
-        for (i, byte) in bytes.iter().enumerate() {
+        for byte in bytes {
             match self.state {
                 AnsiBuilder::Text => match byte {
                     &ESC => {
@@ -141,7 +174,7 @@ impl<'a> OutputParser<'a> {
                         self.state = AnsiBuilder::Esc;
                     }
                     _ => {
-                        self.partial_push(bytes, bytes_start, i);
+                        self.partial_push(byte);
                     }
                 },
                 AnsiBuilder::Esc => match byte {
@@ -157,11 +190,11 @@ impl<'a> OutputParser<'a> {
                         self.state = AnsiBuilder::Text;
                     }
                     _ => {
-                        self.partial_push(bytes, bytes_start, i);
+                        self.partial_push(byte);
                     }
                 },
                 AnsiBuilder::Csi => {
-                    self.partial_push(bytes, bytes_start, i);
+                    self.partial_push(byte);
                     // panic!(
                     //     "CSI parsing not implemented yet! Unhandled byte: {} ({:0X}, {})",
                     //     byte, byte, *byte as char
