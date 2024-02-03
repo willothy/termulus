@@ -18,8 +18,8 @@ pub enum TerminalOutput<'a> {
 }
 
 pub enum CsiState<'a> {
-    Row(&'a [u8]),
-    Column(&'a [u8]),
+    Row(Cow<'a, [u8]>),
+    Column(Cow<'a, [u8]>),
     Finished,
     Error,
 }
@@ -33,39 +33,87 @@ pub struct CsiParser<'a> {
 impl<'a> CsiParser<'a> {
     pub fn new() -> Self {
         Self {
-            state: CsiState::Row(&[]),
+            state: CsiState::Row(Cow::Borrowed(&[])),
             row: 1,
             col: 1,
         }
     }
 
-    // pub fn push(&mut self, byte: &u8) {
-    //     if *byte == b'H' {
-    //         self.state = CsiState::Finished;
-    //         return;
-    //     }
-    //
-    //     match self.state {
-    //         CsiState::Row(slice) => {
-    //             if *byte == b';' {
-    //                 self.state = CsiState::Column(&[]);
-    //                 return;
-    //             } else if byte.is_ascii_digit() {
-    //                 if slice.len() > 0 {
-    //                     let start = slice as *const [u8] as *const u8;
-    //                     slice = unsafe { std::slice::from_raw_parts(start, slice.len() + 1) };
-    //                 }
-    //                 // self.row = (self.row * 10) + (byte - b'0') as usize;
-    //             } else {
-    //                 self.state = CsiState::Error;
-    //             }
-    //         }
-    //         CsiState::Column => {
-    //             self.col = self.col * 10 + (byte - b'0') as usize;
-    //         }
-    //         CsiState::Finished => unreachable!(),
-    //     }
-    // }
+    pub fn push(&mut self, byte: &u8) {
+        if *byte == b'H' {
+            self.state = CsiState::Finished;
+            return;
+        }
+
+        match &mut self.state {
+            CsiState::Row(slice) => {
+                if *byte == b';' {
+                    let row_str = unsafe {
+                        // Safety: we know that the slice contains only ascii digits
+                        std::str::from_utf8_unchecked(slice)
+                    };
+                    self.row = usize::from_str_radix(row_str, 10)
+                        .expect("to have already validated the input");
+                    self.state = CsiState::Column(Cow::Borrowed(&[]));
+                    return;
+                } else if byte.is_ascii_digit() {
+                    if slice.len() > 0 {
+                        match slice {
+                            Cow::Borrowed(slice) => {
+                                let start = *slice as *const [u8] as *const u8;
+                                *slice =
+                                    unsafe { std::slice::from_raw_parts(start, slice.len() + 1) };
+                            }
+                            Cow::Owned(vec) => {
+                                vec.push(*byte);
+                            }
+                        }
+                    } else {
+                        match slice {
+                            Cow::Borrowed(slice) => {
+                                *slice = unsafe { std::slice::from_raw_parts(byte, 1) };
+                            }
+                            Cow::Owned(vec) => {
+                                vec.push(*byte);
+                            }
+                        }
+                    }
+                } else {
+                    self.state = CsiState::Error;
+                }
+            }
+            CsiState::Column(slice) => {
+                if byte.is_ascii_digit() {
+                    let len = slice.len();
+                    if len > 0 {
+                        match slice {
+                            Cow::Borrowed(slice) => {
+                                let start = *slice as *const [u8] as *const u8;
+                                *slice = unsafe { std::slice::from_raw_parts(start, len + 1) };
+                            }
+                            Cow::Owned(vec) => {
+                                vec.push(*byte);
+                            }
+                        }
+                    } else {
+                        match slice {
+                            Cow::Borrowed(slice) => {
+                                *slice = unsafe { std::slice::from_raw_parts(byte, 1) };
+                            }
+                            Cow::Owned(vec) => {
+                                vec.push(*byte);
+                            }
+                        }
+                    }
+                } else {
+                    self.state = CsiState::Error;
+                }
+            }
+            CsiState::Error => panic!(),
+            CsiState::Finished => unreachable!(),
+        }
+        // FIXME: I need to take ownership of any incomplete data here
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
