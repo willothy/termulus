@@ -42,23 +42,16 @@ pub struct TermGui {
 fn get_char_size(ctx: &egui::Context) -> Vec2 {
     let font_id = ctx.style().text_styles[&egui::TextStyle::Monospace].clone();
     ctx.fonts(|fonts| {
+        let height = font_id.size;
         let layout = fonts.layout(
-            "A".to_string(),
+            "@".to_string(),
             font_id,
             egui::Color32::default(),
             f32::INFINITY,
         );
 
-        Vec2::new(layout.rect.width(), layout.rect.height())
+        Vec2::new(layout.mesh_bounds.width(), height)
     })
-}
-
-fn char_to_cursor_offset(char_pos: &CursorPos, char_size: &Vec2, buffer: &[u8]) -> Vec2 {
-    let lines = buffer.split(|b| *b == b'\n').collect::<Vec<_>>();
-
-    let x_off = char_pos.x as f32 * char_size.x;
-    let y_off = (char_pos.y as isize - lines.len() as isize) as f32 * char_size.y;
-    Vec2::new(x_off, y_off)
 }
 
 impl TermGui {
@@ -77,6 +70,14 @@ impl TermGui {
             char_size: None,
             buffer: Vec::new(),
         }
+    }
+
+    fn char_to_cursor_offset(&self, char_size: &Vec2) -> Vec2 {
+        let lines = self.buffer.split(|b| *b == b'\n').collect::<Vec<_>>();
+
+        let x_off = self.cursor.x as f32 * char_size.x;
+        let y_off = (self.cursor.y as isize - lines.len() as isize) as f32 * char_size.y;
+        Vec2::new(x_off, y_off)
     }
 
     fn init(&mut self, ctx: &egui::Context) {
@@ -154,7 +155,7 @@ impl eframe::App for TermGui {
             let left = res.rect.left();
             let painter = ui.painter();
             let char_size = self.char_size.as_ref().expect("char size to have been set");
-            let cursor_offset = char_to_cursor_offset(&self.cursor, &char_size, &self.buffer);
+            let cursor_offset = self.char_to_cursor_offset(&char_size);
 
             painter.rect_filled(
                 egui::Rect::from_min_size(
