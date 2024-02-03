@@ -176,7 +176,22 @@ impl<'a> OutputParser<'a> {
                         // push to escape sequence buffer
                         match &mut self.partial {
                             Cow::Borrowed(slice) => {
-                                *slice = &slice[..slice.len() + 1];
+                                // Same safety message as above applies here.
+                                if slice.len() > 0 {
+                                    let slice_start = (*slice) as *const [u8] as *const u8 as usize;
+                                    let offset = slice_start - bytes_start;
+                                    *slice = unsafe {
+                                        (&bytes[offset..slice.len()+1] as *const [u8]).as_ref().expect(
+                                            "slice should be valid because it is a slice of the input",
+                                            )
+                                    };
+                                } else {
+                                    *slice = unsafe {
+                                        (&bytes[i..i+1] as *const [u8]).as_ref().expect(
+                                            "slice should be valid because it is a slice of the input",
+                                            )
+                                    };
+                                }
                             }
                             Cow::Owned(vec) => {
                                 vec.push(byte);
