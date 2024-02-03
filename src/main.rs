@@ -6,6 +6,7 @@
 //! from the server to the client which is very limiting, but this will allow for scrollback,
 //! multiple panes, and proper keymappings.
 use std::{
+    borrow::Cow,
     ffi::CStr,
     os::fd::{AsRawFd, OwnedFd},
 };
@@ -32,29 +33,210 @@ impl CursorPos {
     }
 }
 
-pub struct TermGui {
+pub trait GetCharSize {
+    fn get_char_size(&self, style: &TextStyle) -> Vec2;
+}
+
+impl GetCharSize for egui::Context {
+    fn get_char_size(&self, style: &TextStyle) -> Vec2 {
+        let font_id = self.style().text_styles[style].clone();
+        self.fonts(|fonts| {
+            let height = font_id.size;
+            let layout = fonts.layout(
+                "@".to_string(),
+                font_id,
+                egui::Color32::default(),
+                f32::INFINITY,
+            );
+
+            Vec2::new(layout.mesh_bounds.width(), height)
+        })
+    }
+}
+
+pub trait IsTerminator {
+    fn is_terminator(&self) -> bool;
+}
+
+impl IsTerminator for u8 {
+    fn is_terminator(&self) -> bool {
+        // FIXME: needs to be implemented
+        return false;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalOutput<'a> {
+    Ansi(Cow<'a, [u8]>),
+    Text(Cow<'a, [u8]>),
+}
+
+pub enum CsiParse {
+    Row,
+    Column,
+    Finished,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnsiBuilder {
+    Text,
+    Esc,
+    Csi,
+}
+
+pub struct OutputParser<'a> {
+    state: AnsiBuilder,
+    /// A buffer for partially built escape sequenves.
+    /// When [`OutputParser::parse`] is called, it will
+    /// append incomplete escape sequences to this buffer
+    /// and only return complete ones, and then attempt to
+    /// resume parsing on the next input.
+    partial: Cow<'a, [u8]>,
+}
+
+pub const ESC: u8 = 0x1B;
+pub const CSI: u8 = 0x5B; // '['
+
+impl<'a> OutputParser<'a> {
+    pub fn new() -> Self {
+        Self {
+            state: AnsiBuilder::Text,
+            partial: Cow::Borrowed(&[]),
+        }
+    }
+
+    pub fn parse(&mut self, bytes: &[u8]) -> Vec<TerminalOutput> {
+        let bytes_start = bytes as *const [u8] as *const u8 as usize;
+        let mut output: Vec<TerminalOutput> = Vec::new();
+        for (i, byte) in bytes.iter().enumerate() {
+            match self.state {
+                AnsiBuilder::Text => {
+                    match byte {
+                        &ESC => {
+                            if self.partial.len() > 0 {
+                                let segment = TerminalOutput::Text(std::mem::replace(
+                                    &mut self.partial,
+                                    Cow::Borrowed(&[]),
+                                ));
+                                output.push(segment);
+                            }
+                            self.state = AnsiBuilder::Esc;
+                        }
+                        &byte => {
+                            // Push to text buffer.
+                            // Note thatthere is no actual difference between text and ansi
+                            // buffer but the use depends on the state of the parser.
+                            match &mut self.partial {
+                                Cow::Borrowed(slice) => {
+                                    // This is mildly sketchy but I think the logic is sound. These
+                                    // should always be slices into the original input so we can
+                                    // use pointer arithmetic to get the offset of the slice start
+                                    // and the offset of the byte in the slice.
+                                    //
+                                    // This way we can avoid copying the slice unless it's a
+                                    // partial escape sequence that needs to be preserved for the
+                                    // next parsing "cycle."
+                                    if slice.len() > 0 {
+                                        let slice_start =
+                                            (*slice) as *const [u8] as *const u8 as usize;
+                                        let offset = slice_start - bytes_start;
+                                        *slice = unsafe {
+                                            (&bytes[offset..slice.len()+1] as *const [u8]).as_ref().expect(
+                                            "slice should be valid because it is a slice of the input",
+                                            )
+                                        };
+                                    } else {
+                                        *slice = unsafe {
+                                            (&bytes[i..i+1] as *const [u8]).as_ref().expect(
+                                            "slice should be valid because it is a slice of the input",
+                                            )
+                                        };
+                                    }
+                                }
+                                Cow::Owned(vec) => {
+                                    vec.push(byte);
+                                }
+                            }
+                        }
+                    }
+                }
+                AnsiBuilder::Esc => match byte {
+                    &CSI => {
+                        self.state = AnsiBuilder::Csi;
+                    }
+                    byte if byte.is_terminator() => {
+                        let segment = TerminalOutput::Ansi(std::mem::replace(
+                            &mut self.partial,
+                            Cow::Borrowed(&[]),
+                        ));
+                        output.push(segment);
+                        self.state = AnsiBuilder::Text;
+                    }
+                    &byte => {
+                        // push to escape sequence buffer
+                        match &mut self.partial {
+                            Cow::Borrowed(slice) => {
+                                *slice = &slice[..slice.len() + 1];
+                            }
+                            Cow::Owned(vec) => {
+                                vec.push(byte);
+                            }
+                        }
+                    }
+                },
+                AnsiBuilder::Csi => {
+                    // self.partial.push(*byte);
+                    panic!(
+                        "CSI parsing not implemented yet! Unhandled byte: {} ({:0X}, {})",
+                        byte, byte, *byte as char
+                    );
+                }
+            }
+        }
+        if self.partial.len() > 0 {
+            match self.state {
+                AnsiBuilder::Text => {
+                    let segment = TerminalOutput::Text(std::mem::replace(
+                        &mut self.partial,
+                        Cow::Borrowed(&[]),
+                    ));
+                    output.push(segment);
+                }
+                AnsiBuilder::Esc | AnsiBuilder::Csi => match &self.partial {
+                    Cow::Owned(_vec) => {}
+                    Cow::Borrowed(slice) => {
+                        // let segment = TerminalOutput::Ansi(slice.to_vec().into());
+                        // output.push(segment);
+                        self.partial = Cow::Owned(slice.to_vec());
+                    }
+                },
+            }
+        }
+        output
+    }
+}
+
+#[test]
+/// NOTE: this is temporary!! do not keep this test!!
+/// this is dependent on an *incorrect* parser and is just for ensuring that
+/// the parser is working correctly during development.
+fn test_parser() {
+    let mut parser = OutputParser::new();
+    let input = b"hello\x1B[31mworld\x1B[0m".to_vec();
+    let output = parser.parse(&input);
+    assert_eq!(output.len(), 1);
+    assert_eq!(output[0], TerminalOutput::Text(Cow::Borrowed(b"hello")));
+}
+
+pub struct TermGui<'a> {
+    parser: OutputParser<'a>,
     buffer: Vec<u8>,
     cursor: CursorPos,
     char_size: Option<Vec2>,
     fd: OwnedFd,
 }
 
-fn get_char_size(ctx: &egui::Context) -> Vec2 {
-    let font_id = ctx.style().text_styles[&egui::TextStyle::Monospace].clone();
-    ctx.fonts(|fonts| {
-        let height = font_id.size;
-        let layout = fonts.layout(
-            "@".to_string(),
-            font_id,
-            egui::Color32::default(),
-            f32::INFINITY,
-        );
-
-        Vec2::new(layout.mesh_bounds.width(), height)
-    })
-}
-
-impl TermGui {
+impl<'a> TermGui<'a> {
     fn new(cc: &eframe::CreationContext<'_>, fd: OwnedFd) -> Self {
         cc.egui_ctx.style_mut(|style| {
             style.override_text_style = Some(TextStyle::Monospace);
@@ -66,6 +248,7 @@ impl TermGui {
         nix::fcntl::fcntl(fd.as_raw_fd(), FcntlArg::F_SETFL(flags)).expect("fcntl");
         Self {
             fd,
+            parser: OutputParser::new(),
             cursor: CursorPos::new(0, 0),
             char_size: None,
             buffer: Vec::new(),
@@ -81,40 +264,61 @@ impl TermGui {
     }
 
     fn init(&mut self, ctx: &egui::Context) {
-        self.char_size = Some(get_char_size(ctx));
+        self.char_size = Some(ctx.get_char_size(&TextStyle::Monospace));
     }
-}
 
-impl eframe::App for TermGui {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let None = self.char_size {
-            self.init(ctx);
-            println!("proportions: {:?}\n", self.char_size);
+    fn update_cursor(&mut self, incoming_bytes: &[u8]) {
+        for byte in incoming_bytes.iter() {
+            match byte {
+                b'\n' => {
+                    self.cursor.x = 0;
+                    self.cursor.y += 1;
+                }
+                b'\r' => {
+                    self.cursor.x = 0;
+                }
+                b'\t' => {
+                    self.cursor.x += 4;
+                }
+                _ => {
+                    self.cursor.x += 1;
+                }
+            }
         }
+    }
+
+    fn read(&mut self, ctx: &egui::Context) {
         let mut buf = vec![0u8; 4096];
         match nix::unistd::read(self.fd.as_raw_fd(), &mut buf) {
             Ok(n_bytes) => {
                 let bytes = &buf[..n_bytes];
-                // TODO: refactor to push chunks of bytes to the buffer
-                // by tracking the last special character, continuing while
-                // the next character is not a special character, and then
-                // pushing bytes[last_special+1..current] to the buffer.
-                for byte in bytes.iter().copied() {
-                    match byte {
-                        b'\n' => {
-                            self.buffer.push(b'\n');
-                            self.cursor.x = 0;
-                            self.cursor.y += 1;
+                let segments = self.parser.parse(bytes);
+                println!("segments: {}", segments.len());
+                for segment in segments.into_iter() {
+                    match segment {
+                        TerminalOutput::Ansi(_seq) => {
+                            // panic!("not implemented");
                         }
-                        b'\r' => {
-                            self.cursor.x = 0;
-                        }
-                        b'\t' => {
-                            self.cursor.x += 4;
-                        }
-                        _ => {
-                            self.buffer.push(byte);
-                            self.cursor.x += 1;
+                        TerminalOutput::Text(text) => {
+                            // self.update_cursor(&text);
+                            for byte in text.as_ref() {
+                                match byte {
+                                    b'\n' => {
+                                        self.cursor.x = 0;
+                                        self.cursor.y += 1;
+                                    }
+                                    b'\r' => {
+                                        self.cursor.x = 0;
+                                    }
+                                    b'\t' => {
+                                        self.cursor.x += 4;
+                                    }
+                                    _ => {
+                                        self.cursor.x += 1;
+                                    }
+                                }
+                            }
+                            self.buffer.extend_from_slice(&text);
                         }
                     }
                 }
@@ -125,6 +329,16 @@ impl eframe::App for TermGui {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
+    }
+}
+
+impl<'a> eframe::App for TermGui<'a> {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let None = self.char_size {
+            self.init(ctx);
+            println!("proportions: {:?}\n", self.char_size);
+        }
+        self.read(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.input(|state| {
                 for event in state.events.iter() {
