@@ -105,61 +105,69 @@ impl<'a> OutputParser<'a> {
         }
     }
 
+    fn partial_push(&mut self, bytes: &[u8], bytes_start: usize, i: usize) {
+        // Push to partial buffer.
+        // Note that there is no actual difference between text and ansi
+        // buffer but the use depends on the state of the parser.
+        match &mut self.partial {
+            Cow::Borrowed(slice) => {
+                // This is mildly sketchy but I think the logic is sound. These
+                // should always be slices into the original input so we can
+                // use pointer arithmetic to get the offset of the slice start
+                // and the offset of the byte in the slice.
+                //
+                // This way we can avoid copying the slice unless it's a
+                // partial escape sequence that needs to be preserved for the
+                // next parsing "cycle."
+                let slice_start = (*slice) as *const [u8] as *const u8 as usize;
+                // if slice_start >= bytes_start {
+                if slice.len() > 0 {
+                    let offset = slice_start - bytes_start;
+                    *slice = unsafe {
+                        (&bytes[offset..offset + slice.len() + 1] as *const [u8])
+                            .as_ref()
+                            .expect("slice should be valid because it is a slice of the input")
+                    };
+                } else {
+                    *slice = unsafe {
+                        (&bytes[i..i + 1] as *const [u8])
+                            .as_ref()
+                            .expect("slice should be valid because it is a slice of the input")
+                    };
+                }
+            }
+            Cow::Owned(vec) => {
+                vec.push(bytes[i]);
+            }
+        }
+    }
+
     pub fn parse(&mut self, bytes: &[u8]) -> Vec<TerminalOutput> {
         let bytes_start = bytes as *const [u8] as *const u8 as usize;
+        if self.partial.len() == 0 {
+            self.partial = Cow::Borrowed(
+                unsafe { (&bytes[0..0] as *const [u8]).as_ref() }
+                    .expect("slice should be valid because it is a slice of the input"),
+            );
+        }
         let mut output: Vec<TerminalOutput> = Vec::new();
         for (i, byte) in bytes.iter().enumerate() {
             match self.state {
-                AnsiBuilder::Text => {
-                    match byte {
-                        &ESC => {
-                            if self.partial.len() > 0 {
-                                let segment = TerminalOutput::Text(std::mem::replace(
-                                    &mut self.partial,
-                                    Cow::Borrowed(&[]),
-                                ));
-                                output.push(segment);
-                            }
-                            self.state = AnsiBuilder::Esc;
+                AnsiBuilder::Text => match byte {
+                    &ESC => {
+                        if self.partial.len() > 0 {
+                            let segment = TerminalOutput::Text(std::mem::replace(
+                                &mut self.partial,
+                                Cow::Borrowed(&[]),
+                            ));
+                            output.push(segment);
                         }
-                        &byte => {
-                            // Push to text buffer.
-                            // Note that there is no actual difference between text and ansi
-                            // buffer but the use depends on the state of the parser.
-                            match &mut self.partial {
-                                Cow::Borrowed(slice) => {
-                                    // This is mildly sketchy but I think the logic is sound. These
-                                    // should always be slices into the original input so we can
-                                    // use pointer arithmetic to get the offset of the slice start
-                                    // and the offset of the byte in the slice.
-                                    //
-                                    // This way we can avoid copying the slice unless it's a
-                                    // partial escape sequence that needs to be preserved for the
-                                    // next parsing "cycle."
-                                    if slice.len() > 0 {
-                                        let slice_start =
-                                            (*slice) as *const [u8] as *const u8 as usize;
-                                        let offset = slice_start - bytes_start;
-                                        *slice = unsafe {
-                                            (&bytes[offset..slice.len()+1] as *const [u8]).as_ref().expect(
-                                            "slice should be valid because it is a slice of the input",
-                                            )
-                                        };
-                                    } else {
-                                        *slice = unsafe {
-                                            (&bytes[i..i+1] as *const [u8]).as_ref().expect(
-                                            "slice should be valid because it is a slice of the input",
-                                            )
-                                        };
-                                    }
-                                }
-                                Cow::Owned(vec) => {
-                                    vec.push(byte);
-                                }
-                            }
-                        }
+                        self.state = AnsiBuilder::Esc;
                     }
-                }
+                    _ => {
+                        self.partial_push(bytes, bytes_start, i);
+                    }
+                },
                 AnsiBuilder::Esc => match byte {
                     &CSI => {
                         self.state = AnsiBuilder::Csi;
@@ -172,39 +180,16 @@ impl<'a> OutputParser<'a> {
                         output.push(segment);
                         self.state = AnsiBuilder::Text;
                     }
-                    &byte => {
-                        // push to escape sequence buffer
-                        match &mut self.partial {
-                            Cow::Borrowed(slice) => {
-                                // Same safety message as above applies here.
-                                if slice.len() > 0 {
-                                    let slice_start = (*slice) as *const [u8] as *const u8 as usize;
-                                    let offset = slice_start - bytes_start;
-                                    *slice = unsafe {
-                                        (&bytes[offset..slice.len()+1] as *const [u8]).as_ref().expect(
-                                            "slice should be valid because it is a slice of the input",
-                                            )
-                                    };
-                                } else {
-                                    *slice = unsafe {
-                                        (&bytes[i..i+1] as *const [u8]).as_ref().expect(
-                                            "slice should be valid because it is a slice of the input",
-                                            )
-                                    };
-                                }
-                            }
-                            Cow::Owned(vec) => {
-                                vec.push(byte);
-                            }
-                        }
+                    _ => {
+                        self.partial_push(bytes, bytes_start, i);
                     }
                 },
                 AnsiBuilder::Csi => {
-                    // self.partial.push(*byte);
-                    panic!(
-                        "CSI parsing not implemented yet! Unhandled byte: {} ({:0X}, {})",
-                        byte, byte, *byte as char
-                    );
+                    self.partial_push(bytes, bytes_start, i);
+                    // panic!(
+                    //     "CSI parsing not implemented yet! Unhandled byte: {} ({:0X}, {})",
+                    //     byte, byte, *byte as char
+                    // );
                 }
             }
         }
@@ -249,6 +234,12 @@ fn test_parser() {
     let output = parser.parse(&input);
     assert_eq!(output.len(), 1);
     assert_eq!(output[0], TerminalOutput::Text(Cow::Borrowed(b"hello")));
+    let TerminalOutput::Text(Cow::Borrowed(slice)) = output[0] else {
+        panic!("previous assertion should have caught this");
+    };
+    assert_eq!(slice.len(), 5);
+    // assert_eq!(parser.partial, Cow::Borrowed(b"\x1B[31mworld\x1B[0m"));
+    // assert_eq!(parser.state, AnsiBuilder::Csi);
 }
 
 pub struct TermGui<'a> {
