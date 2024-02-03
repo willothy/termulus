@@ -31,6 +31,26 @@ impl CursorPos {
     fn new(x: usize, y: usize) -> Self {
         Self { x, y }
     }
+
+    pub fn update(&mut self, incoming: &[u8]) {
+        for byte in incoming.iter() {
+            match byte {
+                b'\n' => {
+                    self.x = 0;
+                    self.y += 1;
+                }
+                b'\r' => {
+                    self.x = 0;
+                }
+                b'\t' => {
+                    self.x += 4;
+                }
+                _ => {
+                    self.x += 1;
+                }
+            }
+        }
+    }
 }
 
 pub trait GetCharSize {
@@ -238,8 +258,8 @@ fn test_parser() {
         panic!("previous assertion should have caught this");
     };
     assert_eq!(slice.len(), 5);
-    // assert_eq!(parser.partial, Cow::Borrowed(b"\x1B[31mworld\x1B[0m"));
-    // assert_eq!(parser.state, AnsiBuilder::Csi);
+    assert_eq!(parser.partial, Cow::Borrowed(b"31mworld\x1B[0m"));
+    assert_eq!(parser.state, AnsiBuilder::Csi);
 }
 
 pub struct TermGui<'a> {
@@ -281,57 +301,19 @@ impl<'a> TermGui<'a> {
         self.char_size = Some(ctx.get_char_size(&TextStyle::Monospace));
     }
 
-    fn update_cursor(&mut self, incoming_bytes: &[u8]) {
-        for byte in incoming_bytes.iter() {
-            match byte {
-                b'\n' => {
-                    self.cursor.x = 0;
-                    self.cursor.y += 1;
-                }
-                b'\r' => {
-                    self.cursor.x = 0;
-                }
-                b'\t' => {
-                    self.cursor.x += 4;
-                }
-                _ => {
-                    self.cursor.x += 1;
-                }
-            }
-        }
-    }
-
     fn read(&mut self, ctx: &egui::Context) {
         let mut buf = vec![0u8; 4096];
         match nix::unistd::read(self.fd.as_raw_fd(), &mut buf) {
             Ok(n_bytes) => {
                 let bytes = &buf[..n_bytes];
                 let segments = self.parser.parse(bytes);
-                println!("segments: {}", segments.len());
-                for segment in segments.into_iter() {
+                for segment in segments {
                     match segment {
                         TerminalOutput::Ansi(_seq) => {
                             // panic!("not implemented");
                         }
                         TerminalOutput::Text(text) => {
-                            // self.update_cursor(&text);
-                            for byte in text.as_ref() {
-                                match byte {
-                                    b'\n' => {
-                                        self.cursor.x = 0;
-                                        self.cursor.y += 1;
-                                    }
-                                    b'\r' => {
-                                        self.cursor.x = 0;
-                                    }
-                                    b'\t' => {
-                                        self.cursor.x += 4;
-                                    }
-                                    _ => {
-                                        self.cursor.x += 1;
-                                    }
-                                }
-                            }
+                            self.cursor.update(&text);
                             self.buffer.extend_from_slice(&text);
                         }
                     }
