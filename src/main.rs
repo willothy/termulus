@@ -124,7 +124,7 @@ impl<'a> OutputParser<'a> {
                         }
                         &byte => {
                             // Push to text buffer.
-                            // Note thatthere is no actual difference between text and ansi
+                            // Note that there is no actual difference between text and ansi
                             // buffer but the use depends on the state of the parser.
                             match &mut self.partial {
                                 Cow::Borrowed(slice) => {
@@ -211,6 +211,8 @@ impl<'a> OutputParser<'a> {
         if self.partial.len() > 0 {
             match self.state {
                 AnsiBuilder::Text => {
+                    // Since we are at the end of the input and the input state is text, we can
+                    // send the text buffer as a segment.
                     let segment = TerminalOutput::Text(std::mem::replace(
                         &mut self.partial,
                         Cow::Borrowed(&[]),
@@ -220,8 +222,14 @@ impl<'a> OutputParser<'a> {
                 AnsiBuilder::Esc | AnsiBuilder::Csi => match &self.partial {
                     Cow::Owned(_vec) => {}
                     Cow::Borrowed(slice) => {
-                        // let segment = TerminalOutput::Ansi(slice.to_vec().into());
-                        // output.push(segment);
+                        // If the partial buffer is borrowed and we have incomplete escape
+                        // sequences, we need to preserve the buffer for the next parsing
+                        // cycle by cloning it into an owned buffer that we can mutate.
+                        //
+                        // This is a necessity due to the fact that the next input will
+                        // likely not be located contiguously in memory with the current
+                        // input and we need to preserve the partial buffer across multiple
+                        // reads.
                         self.partial = Cow::Owned(slice.to_vec());
                     }
                 },
