@@ -100,19 +100,20 @@ impl<'a> OutputParser<'a> {
                 Some(std::mem::replace(&mut self.partial, Cow::Borrowed(&[])))
             }
             AnsiBuilder::Esc | AnsiBuilder::Csi => match &self.partial {
-                Cow::Owned(_vec) => None,
+                // If the partial buffer is borrowed and we have incomplete escape
+                // sequences, we need to preserve the buffer for the next parsing
+                // cycle by cloning it into an owned buffer that we can mutate.
+                //
+                // This is a necessity due to the fact that the next input will
+                // likely not be located contiguously in memory with the current
+                // input and we need to preserve the partial buffer across multiple
+                // reads.
                 Cow::Borrowed(slice) => {
-                    // If the partial buffer is borrowed and we have incomplete escape
-                    // sequences, we need to preserve the buffer for the next parsing
-                    // cycle by cloning it into an owned buffer that we can mutate.
-                    //
-                    // This is a necessity due to the fact that the next input will
-                    // likely not be located contiguously in memory with the current
-                    // input and we need to preserve the partial buffer across multiple
-                    // reads.
                     self.partial = Cow::Owned(slice.to_vec());
                     None
                 }
+                // If the partial buffer is owned, we don't need to do anything.
+                Cow::Owned(_vec) => None,
             },
         }
     }
