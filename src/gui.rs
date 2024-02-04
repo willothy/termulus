@@ -79,9 +79,9 @@ impl<'a> eframe::App for TermGui<'a> {
             let bottom = res.rect.bottom();
             let left = res.rect.left();
             let painter = ui.painter();
-            let char_size = self.char_size.as_ref().expect("char size to have been set");
+            let char_size = *self.char_size.as_ref().expect("char size to have been set");
             let cursor_cell_offset = self.terminal.char_to_cursor_offset();
-            let cursor_offset = cursor_cell_offset * *char_size;
+            let cursor_offset = cursor_cell_offset * char_size;
 
             painter.rect_filled(
                 egui::Rect::from_min_size(
