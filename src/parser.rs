@@ -1,16 +1,10 @@
 use std::borrow::Cow;
 
 pub trait IsTerminator {
-    fn is_terminator(&self) -> bool;
     fn is_csi_terminator(&self) -> bool;
 }
 
 impl IsTerminator for u8 {
-    fn is_terminator(&self) -> bool {
-        // FIXME: needs to be implemented
-        return false;
-    }
-
     fn is_csi_terminator(&self) -> bool {
         match self {
             b'A'..=b'H' => true, // Cursor position
@@ -326,15 +320,16 @@ impl<'a> OutputParser<'a> {
                     &CSI => {
                         self.state = AnsiBuilder::Csi(CsiParser::new());
                     }
-                    byte if byte.is_terminator() => {
-                        let segment = TerminalOutput::Ansi(std::mem::replace(
-                            &mut self.partial,
-                            Cow::Borrowed(unsafe {
-                                std::slice::from_raw_parts(bytes as *const [u8] as *const u8, 0)
-                            }),
-                        ));
-                        output.push(segment);
-                        self.state = AnsiBuilder::Empty;
+                    byte if byte.is_csi_terminator() => {
+                        unreachable!()
+                        // let segment = TerminalOutput::Ansi(std::mem::replace(
+                        //     &mut self.partial,
+                        //     Cow::Borrowed(unsafe {
+                        //         std::slice::from_raw_parts(bytes as *const [u8] as *const u8, 0)
+                        //     }),
+                        // ));
+                        // output.push(segment);
+                        // self.state = AnsiBuilder::Empty;
                     }
                     _ => {
                         self.partial_push(byte);
