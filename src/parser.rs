@@ -220,7 +220,7 @@ pub enum AnsiBuilder<'a> {
 
 pub struct OutputParser<'a> {
     state: AnsiBuilder<'a>,
-    /// A buffer for partially built escape sequenves.
+    /// A buffer for partially built escape sequences.
     /// When [`OutputParser::parse`] is called, it will
     /// append incomplete escape sequences to this buffer
     /// and only return complete ones, and then attempt to
