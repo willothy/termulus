@@ -162,7 +162,6 @@ impl<'a> Terminal<'a> {
                             self.cursor.x = x - 1;
                             self.cursor.y = y - 1;
                             println!("need to set cursor to x: {}, y: {}", x, y);
-                            // panic!("need to set cursor to x: {}, y: {}", x, y);
                         }
                         TerminalOutput::ClearForwards => {
                             let pos = self.cursor.to_buffer_pos(&self.buffer);

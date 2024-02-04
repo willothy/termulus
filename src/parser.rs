@@ -162,10 +162,20 @@ impl<'a> CsiParser<'a> {
                 byte if byte.is_ascii_digit() => unsafe {
                     push_byte(slice, byte);
                 },
-                &byte => {
-                    panic!(
+                byte => {
+                    //NOTE: temporary
+                    // We need to take ownership of the slice when we encounted invalid data
+                    // because the valid data is no longer contiguous in memory as it is separated
+                    // by invalid data.
+                    match slice {
+                        Cow::Borrowed(ref s) => {
+                            *slice = Cow::Owned(s.to_vec());
+                        }
+                        Cow::Owned(_) => {}
+                    };
+                    println!(
                         "invalid byte in CSI sequence: {} ('{}')",
-                        byte, byte as char
+                        byte, *byte as char
                     );
                 }
             },
@@ -179,10 +189,20 @@ impl<'a> CsiParser<'a> {
                 byte if byte.is_ascii_digit() => unsafe {
                     push_byte(slice, byte);
                 },
-                &byte => {
-                    panic!(
+                byte => {
+                    //NOTE: temporary
+                    // We need to take ownership of the slice when we encounted invalid data
+                    // because the valid data is no longer contiguous in memory as it is separated
+                    // by invalid data.
+                    match slice {
+                        Cow::Borrowed(ref s) => {
+                            *slice = Cow::Owned(s.to_vec());
+                        }
+                        Cow::Owned(_) => {}
+                    };
+                    println!(
                         "invalid byte in CSI sequence: {} ('{}')",
-                        byte, byte as char
+                        byte, *byte as char
                     );
                 }
             },
