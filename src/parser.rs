@@ -139,9 +139,6 @@ impl<'a> CsiParser<'a> {
 
         match &mut self.state {
             CsiState::Arg1(slice) => match byte {
-                b'H' => {
-                    self.state = CsiState::Finished(*byte);
-                }
                 byte if byte.is_csi_terminator() => {
                     if let Some(arg1) = accumulate(slice) {
                         self.arg1.replace(arg1);
@@ -322,7 +319,15 @@ impl<'a> OutputParser<'a> {
                             });
                             self.state = AnsiBuilder::Empty;
                         }
-                        CsiState::Finished(_) => {}
+                        CsiState::Finished(terminator) => {
+                            // TODO: temporary
+                            output.push(TerminalOutput::Ansi(Cow::Borrowed(&[])));
+                            println!(
+                                "unhandled CSI terminator: {:X} {}",
+                                terminator, terminator as char
+                            );
+                            self.state = AnsiBuilder::Empty;
+                        }
                     }
                 }
             }
@@ -355,11 +360,19 @@ fn test_parser() {
     };
     assert_eq!(slice.len(), 5);
     assert_eq!(parser.partial.len(), 0);
-    match parser.state {
-        AnsiBuilder::Csi(parser) => {
+    match &parser.state {
+        AnsiBuilder::Csi(csi_parser) => {
             // the \x1B[ are not inclued in the buffer
-            assert_eq!(parser.state, CsiState::Arg1(Cow::Borrowed(b"0")));
+            assert_eq!(csi_parser.state, CsiState::Arg1(Cow::Borrowed(b"0")));
         }
         _ => panic!("parser state should be AnsiBuilder::Csi"),
+    }
+    let input2 = b"m";
+    let output2 = parser.parse(input2);
+    assert_eq!(output2.len(), 1);
+    assert_eq!(parser.partial.len(), 0);
+    match &parser.state {
+        AnsiBuilder::Empty => {}
+        _ => panic!("parser state should be AnsiBuilder::Empty"),
     }
 }
