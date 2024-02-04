@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 pub trait IsTerminator {
     fn is_terminator(&self) -> bool;
+    fn is_csi_terminator(&self) -> bool;
 }
 
 impl IsTerminator for u8 {
@@ -9,25 +10,24 @@ impl IsTerminator for u8 {
         // FIXME: needs to be implemented
         return false;
     }
+
+    fn is_csi_terminator(&self) -> bool {
+        match self {
+            b'A'..=b'H' => true, // Cursor position
+            b'J' | b'K' => true, // Erase display/line
+            b'S' | b'T' => true, // Scroll up/down
+            b'f' => true,        // Horizontal vertical position (?)
+            b'm' => true,        // Select Graphic Rendition (SGR)
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalOutput<'a> {
     Ansi(Cow<'a, [u8]>),
     Text(Cow<'a, [u8]>),
-}
-
-pub enum CsiState<'a> {
-    Arg1(Cow<'a, [u8]>),
-    Arg2(Cow<'a, [u8]>),
-    Finished,
-    Error,
-}
-
-pub struct CsiParser<'a> {
-    state: CsiState<'a>,
-    arg1: usize,
-    arg2: usize,
+    SetCursorPos { x: usize, y: usize },
 }
 
 /// Push a byte into a Cow<'a, [u8]>
@@ -72,70 +72,38 @@ unsafe fn push_byte(slice: &mut Cow<'_, [u8]>, byte: &u8) {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CsiState<'a> {
+    Arg1(Cow<'a, [u8]>),
+    Arg2(Cow<'a, [u8]>),
+    Finished(u8),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsiParser<'a> {
+    state: CsiState<'a>,
+    arg1: Option<usize>,
+    arg2: Option<usize>,
+}
+
 impl<'a> CsiParser<'a> {
     pub fn new() -> Self {
         Self {
             state: CsiState::Arg1(Cow::Borrowed(&[])),
-            arg1: 1,
-            arg2: 1,
+            arg1: None,
+            arg2: None,
         }
     }
 
-    pub fn push(&mut self, byte: &u8) {
-        match &mut self.state {
-            CsiState::Arg1(slice) => match byte {
-                b'H' => {
-                    self.state = CsiState::Finished;
-                    return;
-                }
-                b';' => {
-                    let arg1_str = unsafe {
-                        // Safety: we know that the slice contains only ascii digits
-                        std::str::from_utf8_unchecked(slice)
-                    };
-                    if arg1_str.len() > 0 {
-                        self.arg1 = usize::from_str_radix(arg1_str, 10)
-                            .expect("to have already validated the input");
-                    } else {
-                        self.arg1 = 1;
-                    }
-                    self.state = CsiState::Arg2(Cow::Borrowed(&[]));
-                    return;
-                }
-                byte if byte.is_ascii_digit() => unsafe {
-                    push_byte(slice, byte);
-                },
-                &byte => {
-                    panic!("invalid byte in CSI sequence: {}", byte);
-                    self.state = CsiState::Error;
-                }
-            },
-            CsiState::Arg2(slice) => match byte {
-                b'H' => {
-                    let arg2_str = unsafe {
-                        // Safety: we know that the slice contains only ascii digits
-                        std::str::from_utf8_unchecked(slice)
-                    };
-                    if arg2_str.len() > 0 {
-                        self.arg2 = usize::from_str_radix(arg2_str, 10)
-                            .expect("to have already validated the input");
-                    } else {
-                        self.arg2 = 1;
-                    }
-                    // self.state = CsiState::Finished;
-                    return;
-                }
-                byte if byte.is_ascii_digit() => unsafe {
-                    push_byte(slice, byte);
-                },
-                &byte => {
-                    panic!("invalid byte in CSI sequence: {}", byte);
-                    self.state = CsiState::Error;
-                }
-            },
-            CsiState::Error => panic!(),
-            CsiState::Finished => unreachable!(),
+    pub fn has_incomplete_output(&self) -> bool {
+        match &self.state {
+            CsiState::Arg1(slice) => slice.len() > 0,
+            CsiState::Arg2(slice) => slice.len() > 0,
+            CsiState::Finished(_) => false,
         }
+    }
+
+    pub fn take_incomplete(&mut self) {
         // Take ownership of any incomplete data.
         match &mut self.state {
             CsiState::Arg1(arg1 @ Cow::Borrowed(_)) => {
@@ -151,17 +119,76 @@ impl<'a> CsiParser<'a> {
             _ => {}
         }
     }
+
+    pub fn push(&mut self, byte: &u8) {
+        if let CsiState::Finished(_) = self.state {
+            panic!("attempted to push byte into finished CSI sequence");
+        }
+
+        fn accumulate(slice: &Cow<'_, [u8]>) -> Option<usize> {
+            if slice.len() > 0 {
+                let str = unsafe {
+                    // Safety: we know that the slice contains only ascii digits
+                    std::str::from_utf8_unchecked(slice)
+                };
+                Some(usize::from_str_radix(str, 10).expect("to have already validated the input"))
+            } else {
+                None
+            }
+        }
+
+        match &mut self.state {
+            CsiState::Arg1(slice) => match byte {
+                b'H' => {
+                    self.state = CsiState::Finished(*byte);
+                }
+                byte if byte.is_csi_terminator() => {
+                    if let Some(arg1) = accumulate(slice) {
+                        self.arg1.replace(arg1);
+                    }
+                    self.state = CsiState::Finished(*byte);
+                }
+                b';' => {
+                    if let Some(arg1) = accumulate(slice) {
+                        self.arg1.replace(arg1);
+                    }
+                    self.state = CsiState::Arg2(Cow::Borrowed(&[]));
+                }
+                byte if byte.is_ascii_digit() => unsafe {
+                    push_byte(slice, byte);
+                },
+                &byte => {
+                    panic!("invalid byte in CSI sequence: {}", byte);
+                }
+            },
+            CsiState::Arg2(slice) => match byte {
+                byte if byte.is_csi_terminator() => {
+                    if let Some(arg2) = accumulate(slice) {
+                        self.arg2.replace(arg2);
+                    }
+                    self.state = CsiState::Finished(*byte);
+                }
+                byte if byte.is_ascii_digit() => unsafe {
+                    push_byte(slice, byte);
+                },
+                &byte => {
+                    panic!("invalid byte in CSI sequence: {}", byte);
+                }
+            },
+            CsiState::Finished(_) => unreachable!(),
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnsiBuilder {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnsiBuilder<'a> {
     Text,
     Esc,
-    Csi,
+    Csi(CsiParser<'a>),
 }
 
 pub struct OutputParser<'a> {
-    state: AnsiBuilder,
+    state: AnsiBuilder<'a>,
     /// A buffer for partially built escape sequenves.
     /// When [`OutputParser::parse`] is called, it will
     /// append incomplete escape sequences to this buffer
@@ -206,7 +233,14 @@ impl<'a> OutputParser<'a> {
                 // send the text buffer as a segment.
                 Some(std::mem::replace(&mut self.partial, Cow::Borrowed(&[])))
             }
-            AnsiBuilder::Esc | AnsiBuilder::Csi => match &self.partial {
+            AnsiBuilder::Csi(ref mut csi) => {
+                if csi.has_incomplete_output() {
+                    csi.take_incomplete();
+                }
+                // FIXME: implement this
+                None
+            }
+            AnsiBuilder::Esc => match &self.partial {
                 // If the partial buffer is borrowed and we have incomplete escape
                 // sequences, we need to preserve the buffer for the next parsing
                 // cycle by cloning it into an owned buffer that we can mutate.
@@ -253,7 +287,7 @@ impl<'a> OutputParser<'a> {
                 },
                 AnsiBuilder::Esc => match byte {
                     &CSI => {
-                        self.state = AnsiBuilder::Csi;
+                        self.state = AnsiBuilder::Csi(CsiParser::new());
                     }
                     byte if byte.is_terminator() => {
                         let segment = TerminalOutput::Ansi(std::mem::replace(
@@ -269,8 +303,22 @@ impl<'a> OutputParser<'a> {
                         self.partial_push(byte);
                     }
                 },
-                AnsiBuilder::Csi => {
-                    self.partial_push(byte);
+                AnsiBuilder::Csi(ref mut parser) => {
+                    parser.push(byte);
+                    match parser.state {
+                        CsiState::Arg1(_) => {}
+                        CsiState::Arg2(_) => {}
+                        CsiState::Finished(b'H') => {
+                            // move cursor to position
+                            output.push(TerminalOutput::SetCursorPos {
+                                y: parser.arg1.unwrap_or(1),
+                                x: parser.arg2.unwrap_or(1),
+                            });
+                            self.state = AnsiBuilder::Text;
+                        }
+                        CsiState::Finished(_) => {}
+                    }
+                    // self.partial_push(byte);
                     // panic!(
                     //     "CSI parsing not implemented yet! Unhandled byte: {} ({:0X}, {})",
                     //     byte, byte, *byte as char
@@ -293,14 +341,26 @@ impl<'a> OutputParser<'a> {
 /// the parser is working correctly during development.
 fn test_parser() {
     let mut parser = OutputParser::new();
-    let input = b"hello\x1B[31mworld\x1B[0m".to_vec();
+    let input = b"hello\x1B[1;12Hworld\x1b[0".to_vec();
     let output = parser.parse(&input);
-    assert_eq!(output.len(), 1);
+    assert_eq!(output.len(), 3);
     assert_eq!(output[0], TerminalOutput::Text(Cow::Borrowed(b"hello")));
     let TerminalOutput::Text(Cow::Borrowed(slice)) = output[0] else {
         panic!("previous assertion should have caught this");
     };
     assert_eq!(slice.len(), 5);
-    assert_eq!(parser.partial, Cow::Borrowed(b"31mworld\x1B[0m"));
-    assert_eq!(parser.state, AnsiBuilder::Csi);
+    assert_eq!(output[1], TerminalOutput::SetCursorPos { x: 12, y: 1 });
+    assert_eq!(output[2], TerminalOutput::Text(Cow::Borrowed(b"world")));
+    let TerminalOutput::Text(Cow::Borrowed(slice)) = output[2] else {
+        panic!("previous assertion should have caught this");
+    };
+    assert_eq!(slice.len(), 5);
+    assert_eq!(parser.partial.len(), 0);
+    match parser.state {
+        AnsiBuilder::Csi(parser) => {
+            // the \x1B[ are not inclued in the buffer
+            assert_eq!(parser.state, CsiState::Arg1(Cow::Borrowed(b"0")));
+        }
+        _ => panic!("parser state should be AnsiBuilder::Csi"),
+    }
 }

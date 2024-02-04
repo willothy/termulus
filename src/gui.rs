@@ -115,6 +115,9 @@ impl<'a> TermGui<'a> {
                             self.cursor.update(&text);
                             self.buffer.extend_from_slice(&text);
                         }
+                        TerminalOutput::SetCursorPos { x, y } => {
+                            panic!("need to set cursor to x: {}, y: {}", x, y);
+                        }
                     }
                 }
             }
