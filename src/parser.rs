@@ -231,13 +231,16 @@ impl<'a> OutputParser<'a> {
             AnsiBuilder::Empty => {
                 // Since we are at the end of the input and the input state is text, we can
                 // send the text buffer as a segment.
-                Some(std::mem::replace(&mut self.partial, Cow::Borrowed(&[])))
+                if self.partial.len() > 0 {
+                    Some(std::mem::replace(&mut self.partial, Cow::Borrowed(&[])))
+                } else {
+                    None
+                }
             }
             AnsiBuilder::Csi(ref mut csi) => {
                 if csi.has_incomplete_output() {
                     csi.take_incomplete();
                 }
-                // FIXME: implement this
                 None
             }
             AnsiBuilder::Esc => match &self.partial {
@@ -250,7 +253,10 @@ impl<'a> OutputParser<'a> {
                 // input and we need to preserve the partial buffer across multiple
                 // reads.
                 Cow::Borrowed(slice) => {
-                    self.partial = Cow::Owned(slice.to_vec());
+                    if slice.len() > 0 {
+                        let vec = slice.to_vec();
+                        self.partial = Cow::Owned(vec);
+                    }
                     None
                 }
                 // If the partial buffer is owned, we don't need to do anything.
@@ -318,18 +324,11 @@ impl<'a> OutputParser<'a> {
                         }
                         CsiState::Finished(_) => {}
                     }
-                    // self.partial_push(byte);
-                    // panic!(
-                    //     "CSI parsing not implemented yet! Unhandled byte: {} ({:0X}, {})",
-                    //     byte, byte, *byte as char
-                    // );
                 }
             }
         }
-        if self.partial.len() > 0 {
-            if let Some(text) = self.partial_take() {
-                output.push(TerminalOutput::Text(text));
-            }
+        if let Some(text) = self.partial_take() {
+            output.push(TerminalOutput::Text(text));
         }
         output
     }
