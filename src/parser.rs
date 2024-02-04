@@ -182,7 +182,7 @@ impl<'a> CsiParser<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnsiBuilder<'a> {
-    Text,
+    Empty,
     Esc,
     Csi(CsiParser<'a>),
 }
@@ -203,7 +203,7 @@ pub const CSI: u8 = 0x5B; // '['
 impl<'a> OutputParser<'a> {
     pub fn new() -> Self {
         Self {
-            state: AnsiBuilder::Text,
+            state: AnsiBuilder::Empty,
             partial: Cow::Borrowed(&[]),
         }
     }
@@ -228,7 +228,7 @@ impl<'a> OutputParser<'a> {
 
     fn partial_take(&mut self) -> Option<Cow<'a, [u8]>> {
         match self.state {
-            AnsiBuilder::Text => {
+            AnsiBuilder::Empty => {
                 // Since we are at the end of the input and the input state is text, we can
                 // send the text buffer as a segment.
                 Some(std::mem::replace(&mut self.partial, Cow::Borrowed(&[])))
@@ -268,7 +268,7 @@ impl<'a> OutputParser<'a> {
         let mut output: Vec<TerminalOutput> = Vec::new();
         for byte in bytes {
             match self.state {
-                AnsiBuilder::Text => match byte {
+                AnsiBuilder::Empty => match byte {
                     &ESC => {
                         if self.partial.len() > 0 {
                             let segment = TerminalOutput::Text(std::mem::replace(
@@ -297,7 +297,7 @@ impl<'a> OutputParser<'a> {
                             }),
                         ));
                         output.push(segment);
-                        self.state = AnsiBuilder::Text;
+                        self.state = AnsiBuilder::Empty;
                     }
                     _ => {
                         self.partial_push(byte);
@@ -314,7 +314,7 @@ impl<'a> OutputParser<'a> {
                                 y: parser.arg1.unwrap_or(1),
                                 x: parser.arg2.unwrap_or(1),
                             });
-                            self.state = AnsiBuilder::Text;
+                            self.state = AnsiBuilder::Empty;
                         }
                         CsiState::Finished(_) => {}
                     }
