@@ -196,10 +196,9 @@ impl<'a> OutputParser<'a> {
 
     pub fn parse(&mut self, bytes: &[u8]) -> Vec<TerminalOutput> {
         if self.partial.len() == 0 {
-            self.partial = Cow::Borrowed(
-                unsafe { (&bytes[0..0] as *const [u8]).as_ref() }
-                    .expect("slice should be valid because it is a slice of the input"),
-            );
+            self.partial = Cow::Borrowed(unsafe {
+                std::slice::from_raw_parts(bytes as *const [u8] as *const u8, 0)
+            });
         }
         let mut output: Vec<TerminalOutput> = Vec::new();
         for byte in bytes {
@@ -209,7 +208,9 @@ impl<'a> OutputParser<'a> {
                         if self.partial.len() > 0 {
                             let segment = TerminalOutput::Text(std::mem::replace(
                                 &mut self.partial,
-                                Cow::Borrowed(&[]),
+                                Cow::Borrowed(unsafe {
+                                    std::slice::from_raw_parts(bytes as *const [u8] as *const u8, 0)
+                                }),
                             ));
                             output.push(segment);
                         }
@@ -226,7 +227,9 @@ impl<'a> OutputParser<'a> {
                     byte if byte.is_terminator() => {
                         let segment = TerminalOutput::Ansi(std::mem::replace(
                             &mut self.partial,
-                            Cow::Borrowed(&[]),
+                            Cow::Borrowed(unsafe {
+                                std::slice::from_raw_parts(bytes as *const [u8] as *const u8, 0)
+                            }),
                         ));
                         output.push(segment);
                         self.state = AnsiBuilder::Text;
