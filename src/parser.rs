@@ -154,30 +154,15 @@ impl<'a> OutputParser<'a> {
         // Push to partial buffer.
         // Note that there is no actual difference between text and ansi
         // buffer but the use depends on the state of the parser.
-        // match &mut self.partial {
-        //     Cow::Borrowed(slice) => {
-        //         // This is mildly sketchy but I think the logic is sound. These
-        //         // should always be slices into the original input so we can
-        //         // use pointer arithmetic to get the offset of the slice start
-        //         // and the offset of the byte in the slice.
-        //         //
-        //         // This way we can avoid copying the slice unless it's a
-        //         // partial escape sequence that needs to be preserved for the
-        //         // next parsing "cycle."
-        //         let len = slice.len();
-        //         unsafe {
-        //             if len > 0 {
-        //                 let start = *slice as *const [u8] as *const u8;
-        //                 *slice = std::slice::from_raw_parts(start, len + 1);
-        //             } else {
-        //                 *slice = std::slice::from_raw_parts(byte as *const u8, 1);
-        //             }
-        //         }
-        //     }
-        //     Cow::Owned(vec) => {
-        //         vec.push(*byte);
-        //     }
-        // }
+        //
+        // This is mildly sketchy but I think the logic is sound. These
+        // should always be slices into the original input so we can
+        // use pointer arithmetic to get the offset of the slice start
+        // and the offset of the byte in the slice.
+        //
+        // This way we can avoid copying the slice unless it's a
+        // partial escape sequence that needs to be preserved for the
+        // next parsing "cycle."
         unsafe {
             push_byte(&mut self.partial, byte);
         }
