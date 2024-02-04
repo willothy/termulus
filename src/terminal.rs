@@ -54,6 +54,7 @@ pub struct Terminal<'a> {
     parser: OutputParser<'a>,
     buffer: Vec<u8>,
     cursor: CursorPos,
+    saved_cursor: Option<CursorPos>,
     fd: OwnedFd,
 }
 
@@ -70,6 +71,7 @@ impl<'a> Terminal<'a> {
             fd,
             parser: OutputParser::new(),
             cursor: CursorPos::new(0, 0),
+            saved_cursor: None,
             buffer: Vec::new(),
         }
     }
@@ -174,6 +176,14 @@ impl<'a> Terminal<'a> {
                             self.buffer.clear();
                             self.cursor.x = 0;
                             self.cursor.y = 0;
+                        }
+                        TerminalOutput::RestoreCursorPos => {
+                            if let Some(saved) = self.saved_cursor.take() {
+                                self.cursor = saved;
+                            }
+                        }
+                        TerminalOutput::SaveCursorPos => {
+                            self.saved_cursor = Some(self.cursor.clone());
                         }
                     }
                 }

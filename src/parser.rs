@@ -18,6 +18,7 @@ impl IsTerminator for u8 {
             b'S' | b'T' => true, // Scroll up/down
             b'f' => true,        // Horizontal vertical position (?)
             b'm' => true,        // Select Graphic Rendition (SGR)
+            b's' | b'u' => true, // Save/restore cursor position
             _ => false,
         }
     }
@@ -31,6 +32,8 @@ pub enum TerminalOutput<'a> {
     ClearForwards,
     ClearBackwards,
     ClearAll,
+    RestoreCursorPos,
+    SaveCursorPos,
     // I don't have scrollback yet
     // ClearAllAndScrollback
 }
@@ -160,7 +163,10 @@ impl<'a> CsiParser<'a> {
                     push_byte(slice, byte);
                 },
                 &byte => {
-                    panic!("invalid byte in CSI sequence: {}", byte);
+                    panic!(
+                        "invalid byte in CSI sequence: {} ('{}')",
+                        byte, byte as char
+                    );
                 }
             },
             CsiState::Arg2(slice) => match byte {
@@ -174,7 +180,10 @@ impl<'a> CsiParser<'a> {
                     push_byte(slice, byte);
                 },
                 &byte => {
-                    panic!("invalid byte in CSI sequence: {}", byte);
+                    panic!(
+                        "invalid byte in CSI sequence: {} ('{}')",
+                        byte, byte as char
+                    );
                 }
             },
             CsiState::Finished(_) => unreachable!(),
@@ -333,6 +342,14 @@ impl<'a> OutputParser<'a> {
                                 Some(3..) => panic!("invalid argument for J command"),
                             };
                             output.push(command);
+                            self.state = AnsiBuilder::Empty;
+                        }
+                        CsiState::Finished(b's') => {
+                            output.push(TerminalOutput::SaveCursorPos);
+                            self.state = AnsiBuilder::Empty;
+                        }
+                        CsiState::Finished(b'u') => {
+                            output.push(TerminalOutput::RestoreCursorPos);
                             self.state = AnsiBuilder::Empty;
                         }
                         CsiState::Finished(terminator) => {
