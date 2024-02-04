@@ -28,6 +28,11 @@ pub enum TerminalOutput<'a> {
     Ansi(Cow<'a, [u8]>),
     Text(Cow<'a, [u8]>),
     SetCursorPos { x: usize, y: usize },
+    ClearForwards,
+    ClearBackwards,
+    ClearAll,
+    // I don't have scrollback yet
+    // ClearAllAndScrollback
 }
 
 /// Push a byte into a Cow<'a, [u8]>
@@ -314,13 +319,26 @@ impl<'a> OutputParser<'a> {
                         CsiState::Finished(b'H') => {
                             // move cursor to position
                             output.push(TerminalOutput::SetCursorPos {
-                                y: parser.arg1.unwrap_or(1),
-                                x: parser.arg2.unwrap_or(1),
+                                y: parser.arg1.take().unwrap_or(1),
+                                x: parser.arg2.take().unwrap_or(1),
                             });
+                            self.state = AnsiBuilder::Empty;
+                        }
+                        CsiState::Finished(b'J') => {
+                            // move cursor to position
+                            let command = match parser.arg1.take() {
+                                Some(0) | None => TerminalOutput::ClearForwards,
+                                Some(1) => TerminalOutput::ClearBackwards,
+                                Some(2) => TerminalOutput::ClearAll,
+                                Some(3..) => panic!("invalid argument for J command"),
+                            };
+                            output.push(command);
                             self.state = AnsiBuilder::Empty;
                         }
                         CsiState::Finished(terminator) => {
                             // TODO: temporary
+                            parser.arg1.take();
+                            parser.arg2.take();
                             output.push(TerminalOutput::Ansi(Cow::Borrowed(&[])));
                             println!(
                                 "unhandled CSI terminator: {:X} {}",

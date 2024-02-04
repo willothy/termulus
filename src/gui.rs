@@ -55,6 +55,14 @@ impl<'a> eframe::App for TermGui<'a> {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         };
+        // let size = nix::pty::Winsize {
+        //     ws_row: 24,
+        //     ws_col: 80,
+        //     ws_xpixel: 0,
+        //     ws_ypixel: 0,
+        // };
+        // self.terminal.set_window_size(&size).ok();
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.input(|state| {
                 for event in state.events.iter() {

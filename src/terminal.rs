@@ -1,6 +1,7 @@
 use std::os::fd::{AsRawFd, OwnedFd};
 
 use crate::parser::{OutputParser, TerminalOutput};
+use anyhow::Result;
 use egui::{self, Vec2};
 use nix::{
     errno::Errno,
@@ -17,6 +18,15 @@ pub struct CursorPos {
 impl CursorPos {
     fn new(x: usize, y: usize) -> Self {
         Self { x, y }
+    }
+
+    pub fn to_buffer_pos(&self, buffer: &[u8]) -> usize {
+        buffer
+            .split(|b| *b == b'\n')
+            .take(self.y)
+            .map(|line| line.len())
+            .sum::<usize>()
+            + self.x
     }
 
     pub fn update(&mut self, incoming: &[u8]) {
@@ -48,6 +58,8 @@ pub struct Terminal<'a> {
 }
 
 impl<'a> Terminal<'a> {
+    // TODO: write a builder that spawns a new process so the fd doesn't need to be exposed
+    // to the rest of the program.
     pub fn new(fd: OwnedFd) -> Self {
         let flags = nix::fcntl::fcntl(fd.as_raw_fd(), FcntlArg::F_GETFL).expect("fcntl");
         let mut flags = OFlag::from_bits(flags & O_ACCMODE).unwrap();
@@ -62,18 +74,51 @@ impl<'a> Terminal<'a> {
         }
     }
 
-    /// Access the buffer as a &str. This functin is safe because
+    pub fn get_window_size(&self) -> Result<nix::pty::Winsize> {
+        // This defines the raw ioctl function that we can use to get the window size
+        nix::ioctl_read_bad!(raw_get_win_size, nix::libc::TIOCGWINSZ, nix::pty::Winsize);
+
+        let mut ws = nix::pty::Winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0, // unused
+            ws_ypixel: 0, // unused
+        };
+
+        unsafe {
+            raw_get_win_size(self.fd.as_raw_fd(), &mut ws)?;
+        }
+
+        Ok(ws)
+    }
+
+    pub fn set_window_size(&mut self, size: &nix::pty::Winsize) -> Result<()> {
+        // This defines the raw ioctl function that we can use to get the window size
+        nix::ioctl_write_ptr_bad!(raw_set_win_size, nix::libc::TIOCSWINSZ, nix::pty::Winsize);
+
+        unsafe {
+            raw_set_win_size(self.fd.as_raw_fd(), size)?;
+        }
+        Ok(())
+    }
+
+    /// Access the buffer as a &str. This function is safe because
     /// we know that all non-printable characters have been removed by
     /// the parser.
     pub fn buffer(&self) -> &str {
         unsafe { std::str::from_utf8_unchecked(&self.buffer) }
     }
 
-    pub fn char_to_cursor_offset(&self /* , char_size: &Vec2 */) -> Vec2 {
-        let lines = self.buffer.split(|b| *b == b'\n').collect::<Vec<_>>();
+    pub fn cursor_pos(&self) -> &CursorPos {
+        &self.cursor
+    }
 
-        let x_off = self.cursor.x as f32; // * char_size.x;
-        let y_off = (self.cursor.y as isize - lines.len() as isize) as f32; // * char_size.y;
+    pub fn char_to_cursor_offset(&self) -> Vec2 {
+        println!("Retrieved cursor pos: {}, {}", self.cursor.x, self.cursor.y);
+        let lines = self.buffer.split(|b| *b == b'\n').count();
+
+        let x_off = self.cursor.x as f32;
+        let y_off = (self.cursor.y as isize - lines as isize) as f32;
         Vec2::new(x_off, y_off)
     }
 
@@ -108,10 +153,27 @@ impl<'a> Terminal<'a> {
                         }
                         TerminalOutput::Text(text) => {
                             self.cursor.update(&text);
+                            println!("updated cursor to {}, {}", self.cursor.x, self.cursor.y);
                             self.buffer.extend_from_slice(&text);
                         }
                         TerminalOutput::SetCursorPos { x, y } => {
-                            panic!("need to set cursor to x: {}, y: {}", x, y);
+                            self.cursor.x = x - 1;
+                            self.cursor.y = y - 1;
+                            println!("need to set cursor to x: {}, y: {}", x, y);
+                            // panic!("need to set cursor to x: {}, y: {}", x, y);
+                        }
+                        TerminalOutput::ClearForwards => {
+                            let pos = self.cursor.to_buffer_pos(&self.buffer);
+                            self.buffer.drain(pos..);
+                        }
+                        TerminalOutput::ClearBackwards => {
+                            let pos = self.cursor.to_buffer_pos(&self.buffer);
+                            self.buffer.drain(..pos);
+                        }
+                        TerminalOutput::ClearAll => {
+                            self.buffer.clear();
+                            self.cursor.x = 0;
+                            self.cursor.y = 0;
                         }
                     }
                 }
