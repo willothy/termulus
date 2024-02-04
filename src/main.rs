@@ -14,6 +14,7 @@ use nix::pty::ForkptyResult;
 
 mod gui;
 mod parser;
+mod terminal;
 
 fn main() -> Result<()> {
     // Temporary: sesh already contains the logic for handling process creation
