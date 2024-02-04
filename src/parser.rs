@@ -30,6 +30,48 @@ pub struct CsiParser<'a> {
     col: usize,
 }
 
+/// Push a byte into a Cow<'a, [u8]>
+///
+/// The caller must ensure that if the Cow is borrowed, the slice is not
+/// longer than the memory it references.
+///
+/// As long as the arguments satisfy the following conditions, this function is safe
+/// to call:
+///
+/// - `&byte >= &slice` (the byte is within the slice or after it)
+/// - `&byte >= &input[0] && &byte < &input[input.len()]` (the byte is within the input)
+/// - `&slice >= &input[0] && &slice <= &input[input.len()]` (the slice is within the input)
+/// - `&slice[slice.len()] <= &input[input.len()]` (the slice  is within the input)
+unsafe fn push_byte(slice: &mut Cow<'_, [u8]>, byte: &u8) {
+    match slice {
+        Cow::Borrowed(slice) => {
+            assert!(byte as *const u8 >= *slice as *const [u8] as *const u8);
+            // // These assertions cannot be made at the moment because we do not have the original
+            // // input in the Csi parser, and the original input is not necessarily a slice or contiguous
+            // // in memory.
+            // assert!(byte >= &input[0] && byte < &input[input.len()]);
+            // assert!(&slice[0] >= &input[0] && &slice[0] <= &input[input.len()]);
+            // assert!(&slice[slice.len()] <= &input[input.len()]);
+            let len = slice.len();
+            if len > 0 {
+                // If the slice is borrowed and non-empty, the byte should *always*
+                // be located directly after the end of the slice.
+                assert_eq!(
+                    byte as *const u8 as usize,
+                    *slice as *const [u8] as *const u8 as usize + len
+                );
+                let start = *slice as *const [u8] as *const u8;
+                *slice = unsafe { std::slice::from_raw_parts(start, len + 1) };
+            } else {
+                *slice = unsafe { std::slice::from_raw_parts(byte, 1) };
+            }
+        }
+        Cow::Owned(vec) => {
+            vec.push(*byte);
+        }
+    }
+}
+
 impl<'a> CsiParser<'a> {
     pub fn new() -> Self {
         Self {
@@ -57,26 +99,8 @@ impl<'a> CsiParser<'a> {
                     self.state = CsiState::Column(Cow::Borrowed(&[]));
                     return;
                 } else if byte.is_ascii_digit() {
-                    if slice.len() > 0 {
-                        match slice {
-                            Cow::Borrowed(slice) => {
-                                let start = *slice as *const [u8] as *const u8;
-                                *slice =
-                                    unsafe { std::slice::from_raw_parts(start, slice.len() + 1) };
-                            }
-                            Cow::Owned(vec) => {
-                                vec.push(*byte);
-                            }
-                        }
-                    } else {
-                        match slice {
-                            Cow::Borrowed(slice) => {
-                                *slice = unsafe { std::slice::from_raw_parts(byte, 1) };
-                            }
-                            Cow::Owned(vec) => {
-                                vec.push(*byte);
-                            }
-                        }
+                    unsafe {
+                        push_byte(slice, byte);
                     }
                 } else {
                     self.state = CsiState::Error;
@@ -84,26 +108,8 @@ impl<'a> CsiParser<'a> {
             }
             CsiState::Column(slice) => {
                 if byte.is_ascii_digit() {
-                    let len = slice.len();
-                    if len > 0 {
-                        match slice {
-                            Cow::Borrowed(slice) => {
-                                let start = *slice as *const [u8] as *const u8;
-                                *slice = unsafe { std::slice::from_raw_parts(start, len + 1) };
-                            }
-                            Cow::Owned(vec) => {
-                                vec.push(*byte);
-                            }
-                        }
-                    } else {
-                        match slice {
-                            Cow::Borrowed(slice) => {
-                                *slice = unsafe { std::slice::from_raw_parts(byte, 1) };
-                            }
-                            Cow::Owned(vec) => {
-                                vec.push(*byte);
-                            }
-                        }
+                    unsafe {
+                        push_byte(slice, byte);
                     }
                 } else {
                     self.state = CsiState::Error;
@@ -148,29 +154,32 @@ impl<'a> OutputParser<'a> {
         // Push to partial buffer.
         // Note that there is no actual difference between text and ansi
         // buffer but the use depends on the state of the parser.
-        match &mut self.partial {
-            Cow::Borrowed(slice) => {
-                // This is mildly sketchy but I think the logic is sound. These
-                // should always be slices into the original input so we can
-                // use pointer arithmetic to get the offset of the slice start
-                // and the offset of the byte in the slice.
-                //
-                // This way we can avoid copying the slice unless it's a
-                // partial escape sequence that needs to be preserved for the
-                // next parsing "cycle."
-                let len = slice.len();
-                unsafe {
-                    if len > 0 {
-                        let start = *slice as *const [u8] as *const u8;
-                        *slice = std::slice::from_raw_parts(start, len + 1);
-                    } else {
-                        *slice = std::slice::from_raw_parts(byte as *const u8, 1);
-                    }
-                }
-            }
-            Cow::Owned(vec) => {
-                vec.push(*byte);
-            }
+        // match &mut self.partial {
+        //     Cow::Borrowed(slice) => {
+        //         // This is mildly sketchy but I think the logic is sound. These
+        //         // should always be slices into the original input so we can
+        //         // use pointer arithmetic to get the offset of the slice start
+        //         // and the offset of the byte in the slice.
+        //         //
+        //         // This way we can avoid copying the slice unless it's a
+        //         // partial escape sequence that needs to be preserved for the
+        //         // next parsing "cycle."
+        //         let len = slice.len();
+        //         unsafe {
+        //             if len > 0 {
+        //                 let start = *slice as *const [u8] as *const u8;
+        //                 *slice = std::slice::from_raw_parts(start, len + 1);
+        //             } else {
+        //                 *slice = std::slice::from_raw_parts(byte as *const u8, 1);
+        //             }
+        //         }
+        //     }
+        //     Cow::Owned(vec) => {
+        //         vec.push(*byte);
+        //     }
+        // }
+        unsafe {
+            push_byte(&mut self.partial, byte);
         }
     }
 
