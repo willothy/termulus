@@ -76,31 +76,27 @@ unsafe fn push_byte(slice: &mut Cow<'_, [u8]>, byte: &u8) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CsiState<'a> {
-    Arg1(Cow<'a, [u8]>),
-    Arg2(Cow<'a, [u8]>),
+    Argument(Cow<'a, [u8]>),
     Finished(u8),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsiParser<'a> {
     state: CsiState<'a>,
-    arg1: Option<usize>,
-    arg2: Option<usize>,
+    args: Vec<usize>,
 }
 
 impl<'a> CsiParser<'a> {
     pub fn new() -> Self {
         Self {
-            state: CsiState::Arg1(Cow::Borrowed(&[])),
-            arg1: None,
-            arg2: None,
+            state: CsiState::Argument(Cow::Borrowed(&[])),
+            args: Vec::new(),
         }
     }
 
     pub fn has_incomplete_output(&self) -> bool {
         match &self.state {
-            CsiState::Arg1(slice) => slice.len() > 0,
-            CsiState::Arg2(slice) => slice.len() > 0,
+            CsiState::Argument(slice) => slice.len() > 0,
             CsiState::Finished(_) => false,
         }
     }
@@ -108,14 +104,9 @@ impl<'a> CsiParser<'a> {
     pub fn take_incomplete(&mut self) {
         // Take ownership of any incomplete data.
         match &mut self.state {
-            CsiState::Arg1(arg1 @ Cow::Borrowed(_)) => {
-                if arg1.len() > 0 {
-                    *arg1 = Cow::Owned(arg1.to_vec());
-                }
-            }
-            CsiState::Arg2(arg2 @ Cow::Borrowed(_)) => {
-                if arg2.len() > 0 {
-                    *arg2 = Cow::Owned(arg2.to_vec());
+            CsiState::Argument(arg @ Cow::Borrowed(_)) => {
+                if arg.len() > 0 {
+                    *arg = Cow::Owned(arg.to_vec());
                 }
             }
             _ => {}
@@ -140,45 +131,18 @@ impl<'a> CsiParser<'a> {
         }
 
         match &mut self.state {
-            CsiState::Arg1(slice) => match byte {
+            CsiState::Argument(slice) => match byte {
                 byte if byte.is_csi_terminator() => {
-                    if let Some(arg1) = accumulate(slice) {
-                        self.arg1.replace(arg1);
+                    if let Some(arg) = accumulate(slice) {
+                        self.args.push(arg);
                     }
                     self.state = CsiState::Finished(*byte);
                 }
                 b';' => {
-                    if let Some(arg1) = accumulate(slice) {
-                        self.arg1.replace(arg1);
+                    if let Some(arg) = accumulate(slice) {
+                        self.args.push(arg);
                     }
-                    self.state = CsiState::Arg2(Cow::Borrowed(&[]));
-                }
-                byte if byte.is_ascii_digit() => unsafe {
-                    push_byte(slice, byte);
-                },
-                byte => {
-                    //NOTE: temporary
-                    // We need to take ownership of the slice when we encounted invalid data
-                    // because the valid data is no longer contiguous in memory as it is separated
-                    // by invalid data.
-                    match slice {
-                        Cow::Borrowed(ref s) => {
-                            *slice = Cow::Owned(s.to_vec());
-                        }
-                        Cow::Owned(_) => {}
-                    };
-                    println!(
-                        "invalid byte in CSI sequence: {} ('{}')",
-                        byte, *byte as char
-                    );
-                }
-            },
-            CsiState::Arg2(slice) => match byte {
-                byte if byte.is_csi_terminator() => {
-                    if let Some(arg2) = accumulate(slice) {
-                        self.arg2.replace(arg2);
-                    }
-                    self.state = CsiState::Finished(*byte);
+                    self.state = CsiState::Argument(Cow::Borrowed(&[]));
                 }
                 byte if byte.is_ascii_digit() => unsafe {
                     push_byte(slice, byte);
@@ -338,19 +302,18 @@ impl<'a> OutputParser<'a> {
                 AnsiBuilder::Csi(ref mut parser) => {
                     parser.push(byte);
                     match parser.state {
-                        CsiState::Arg1(_) => {}
-                        CsiState::Arg2(_) => {}
+                        CsiState::Argument(_) => {}
                         CsiState::Finished(b'H') => {
                             // move cursor to position
                             output.push(TerminalOutput::SetCursorPos {
-                                y: parser.arg1.take().unwrap_or(1),
-                                x: parser.arg2.take().unwrap_or(1),
+                                x: parser.args.pop().unwrap_or(1),
+                                y: parser.args.pop().unwrap_or(1),
                             });
                             self.state = AnsiBuilder::Empty;
                         }
                         CsiState::Finished(b'J') => {
                             // move cursor to position
-                            let command = match parser.arg1.take() {
+                            let command = match parser.args.pop() {
                                 Some(0) | None => TerminalOutput::ClearForwards,
                                 Some(1) => TerminalOutput::ClearBackwards,
                                 Some(2) => TerminalOutput::ClearAll,
@@ -369,8 +332,6 @@ impl<'a> OutputParser<'a> {
                         }
                         CsiState::Finished(terminator) => {
                             // TODO: temporary
-                            parser.arg1.take();
-                            parser.arg2.take();
                             output.push(TerminalOutput::Ansi(Cow::Borrowed(&[])));
                             println!(
                                 "unhandled CSI terminator: {:X} {}",
@@ -413,7 +374,7 @@ fn test_parser() {
     match &parser.state {
         AnsiBuilder::Csi(csi_parser) => {
             // the \x1B[ are not inclued in the buffer
-            assert_eq!(csi_parser.state, CsiState::Arg1(Cow::Borrowed(b"0")));
+            assert_eq!(csi_parser.state, CsiState::Argument(Cow::Borrowed(b"0")));
         }
         _ => panic!("parser state should be AnsiBuilder::Csi"),
     }
